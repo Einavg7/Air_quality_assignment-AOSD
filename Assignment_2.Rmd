@@ -1,0 +1,201 @@
+---
+title: "Assignment 2"
+author: "Einav Grinberg"
+date: "November 28, 2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(sf)
+setwd('C:/Users/einav/Desktop/Assignment_2')
+```
+
+## Preparing the Station Data
+
+```{r stations}
+#read stations csv file
+stations = read.csv('AirBase_v8_stations.csv')
+
+#set stations as sf
+stations.sf = st_as_sf(stations, coords = c("station_longitude_deg", "station_latitude_deg"), na.fail = FALSE)
+
+#extract muenster location
+muenster = st_point(c(7.6, 52))
+muenster.sfc = st_sfc(muenster, crs = 4326)
+st_crs(stations.sf) = 4326
+#buffer to include stations 100 km around muenster
+st_distance(stations.sf, muenster.sfc)[1:10,]
+d = st_distance(stations.sf, muenster.sfc)
+length(d)
+sel = as.numeric(d) < 100000
+dim(sel)
+length(sel)
+stations.sf.muenster = stations.sf[sel,]
+stations.sf.muenster = na.omit(stations.sf.muenster)
+```
+
+## Preparing the Air Quality Data
+
+```{r air quality, warning = FALSE}
+files = list.files(".", pattern="DE_8*")
+r = lapply(files,  function(i){read.csv(i, fileEncoding = "UTF-16", stringsAsFactors = FALSE)})
+```
+
+```{r combinig the data by codes}
+codes = sapply(r, function(x) x$AirQualityStationEoICode[1])
+codes = unlist(codes, use.names = FALSE)
+codes = as.vector(codes)
+length(codes)
+length(r)
+r_stations = codes %in% stations.sf.muenster$station_european_code
+r2 = r[r_stations]
+```
+
+```{r time, warning=FALSE}
+r2 = r2[sapply(r2, nrow) > 1000]
+names(r2) =  sapply(r2, function(f) unique(f$AirQualityStationEoICode))
+length(r2) == length(unique(names(r2)))
+
+Sys.setenv(TZ = "UTC")
+r2 = lapply(r2, function(f) {
+        f$t = as.POSIXct(f$DatetimeBegin)
+        f[order(f$t), ]
+    }
+)
+
+library(xts)
+r2 = lapply(r2, function(f) xts(f$Concentration, f$t))
+aq = do.call(cbind, r2)
+```
+```{r remove stations with more than 25% values missing}
+sel = apply(aq, 2, function(x) sum(is.na(x)) < 0.75 * 365 * 24)
+aqsel = aq[, sel]
+```
+
+```{r choose type of station, warning=FALSE}
+library(tidyverse)
+read.csv("AirBase_v8_stations.csv", sep = ",", stringsAsFactors = FALSE) %>% 
+    as_tibble  %>% 
+    filter(country_iso_code == "DE", station_type_of_area == "urban" |
+                 type_of_station == "Background") -> a2
+library(sf)
+library(stars)
+a2.sf = st_as_sf(a2, coords = c("station_longitude_deg", "station_latitude_deg"), crs = 4326)
+
+sel =  colnames(aqsel) %in% a2$station_european_code
+aqsel = aqsel[, sel]
+
+```
+
+```{r check for trend}
+plot(aqsel$DENW260, type = 'l', xlab = 'Hours', ylab = 'NO2', main = 'NO2 Hourly data at Muenster Station Wesler str.' )
+ts_station = aqsel$DENW260
+ts_station = na.omit(ts_station)
+spectrum(ts_station, type = 'l', xlim = c(0,0.00004))
+```
+When looking at one station sample, their might be a trend, but later on even when trying to de-trend the data, the variogram is not fitted in both cases.
+
+```{r means of stations}
+tb = tibble(NO2 = apply(aqsel, 2, max, na.rm = TRUE), station_european_code = colnames(aqsel))
+crs = 32632
+right_join(a2.sf, tb) %>% st_transform(crs) -> no2.sf 
+# Joining, by = "station_european_code"
+# load German boundaries
+data(air, package = "spacetime")
+de <- st_transform(st_as_sf(DE_NUTS1), crs)
+nrw = de %>%
+filter (VARNAME_1 == "North Rhine-Westphalia")
+nrw_p = no2.sf[nrw,]
+ggplot() +geom_sf(data = nrw) + geom_sf(data = nrw_p, mapping = aes(col = NO2))
+nrw_p$station_name[nrw_p$NO2 > 200]
+```
+In the selected stations their are two stations that have exceeded European Air Quality standards but we don't now how many times they exceeded and if it is above 18 times that are permitted.
+
+```{r variogram, warning=FALSE}
+library(gstat)
+v = variogram(NO2~1, nrw_p)
+plot(v, plot.numbers = TRUE)
+
+v0 = variogram(NO2~1, nrw_p, cutoff = 100000, width = 10000)
+plot(v0, plot.numbers = TRUE)
+
+v.m = fit.variogram(v, vgm(1, "Exp", 50000, 1))
+plot(v, v.m, plot.numbers = TRUE)
+```
+```{r kriging}
+st_bbox(nrw) %>%
+  st_as_stars(dx = 1000) %>%
+  st_set_crs(crs) %>%
+  st_crop(nrw) -> grd
+grd
+
+k = krige(NO2~1, nrw_p, grd, v.m)
+#> [using ordinary kriging]
+ggplot() + geom_stars(data = k, aes(fill = var1.pred, x = x, y = y)) + 
+    geom_sf(data = st_cast(nrw, "MULTILINESTRING")) + 
+    geom_sf(data = nrw_p)
+```
+
+Using ordinary kriging I can see that the predicted values around Münster stations are less than the European Air Quality standards of 200 cubic-micrograms. Next I will estimate the values for my chosen locations to confirm the kriging interpolation. 
+
+```{r spatio temporal interpolation}
+aqx = aq[,colnames(aq) %in% a2$station_european_code]
+sfc = st_geometry(a2.sf)[match(colnames(aqx), a2.sf$station_european_code)]
+st_as_stars(NO2 = as.matrix(aqx)) %>%
+    st_set_dimensions(names = c("time", "station")) %>%
+    st_set_dimensions("time", index(aqx)) %>%
+    st_set_dimensions("station", sfc) -> no2.st
+
+v.st = variogramST(NO2~1, no2.st[,1:(24*31)], tlags = 0:48)
+
+```
+
+```{r}
+v1 = plot(v.st)
+v2 = plot(v.st, map = FALSE)
+print(v1, split = c(1,1,2,1), more = TRUE)
+print(v2, split = c(2,1,2,1), more = FALSE)
+```
+
+```{r}
+# product-sum
+prodSumModel <- vgmST("productSum",
+    space=vgm(150, "Exp", 200, 0),
+    time= vgm(20, "Sph",   40, 0),
+    k=2)
+StAni = estiStAni(v.st, c(0,200000))
+(fitProdSumModel <- fit.StVariogram(v.st, prodSumModel, fit.method = 7,
+    stAni = StAni, method = "L-BFGS-B",
+    control = list(parscale = c(1,10,1,1,0.1,1,10)),
+    lower = rep(0.0001, 7)))
+plot(v.st, fitProdSumModel, wireframe=FALSE, all=TRUE, scales=list(arrows=FALSE), zlim=c(0,150))
+
+```
+
+
+```{r ifgi}
+
+ifgi = st_point(c(7.59, 51.96))
+ifgi.sfc = st_sfc(ifgi, crs = 32632)
+t = st_get_dimension_values(no2.st, 1)
+st_as_stars(list(pts = matrix(1, length(t), length(ifgi.sfc)))) %>%
+    st_set_dimensions(names = c("time", "station")) %>%
+    st_set_dimensions("time", t) %>%
+    st_set_dimensions("station", ifgi.sfc) -> new_pt_ifgi
+
+```
+
+```{r extract estimated values for ifgi}
+# no2.st <- st_transform(no2.st, crs)
+# new_ts <- krigeST(NO2~1, data = (no2.st["NO2"]), newdata = (new_pt_ifgi),
+#          nmax = 14, stAni = StAni, modelList = fitProdSumModel,
+#          progress = FALSE)
+# plot(xts(t(new_ts[[2]]), t), type = 'l')
+# 
+# class(new_pt_ifgi)
+# class(no2.st["NO2"])
+
+```
+
+The last part for extracting estimated values for my location is not working because both of the objects are stars objects and transforming them to sf objects does not work. Therefore I can not fully estimate if the European Air Quality standards have been met for my chosen location.
