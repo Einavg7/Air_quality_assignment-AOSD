@@ -1,8 +1,9 @@
-# Air_quality_NO2_assignment-AOSD 
+# Air quality NO2 assignment - Analysis of Spatial-temporal Data 
 
 In this project I used the national sensor data reported to and distributed by the European environmental agency of
-the [European Air Quality Standards](https://ec.europa.eu/environment/air/quality/standards.htm).  
-I assessed whether the Institute for Geoinformatics location during the year 2017 with respect to Nitorgen Dioxide (NO2), the European air quality standards were met.
+the [European Air Quality Standards](https://ec.europa.eu/environment/air/quality/standards.htm).
+Using point interpolation, I assessed whether the location of the Institute for Geoinformatics, Muenster (IFGI) 
+during the year 2017 with respect to the European air quality standards of Nitorgen Dioxide (NO2) were met.
 
 ## Data
 
