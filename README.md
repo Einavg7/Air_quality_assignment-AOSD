@@ -1,4 +1,4 @@
-# Air quality NO2 assignment - Analysis of Spatial-temporal Data 
+# Air quality NO<sub>2</sub> assignment - Analysis of Spatial-temporal Data 
 
 In this project I used the national sensor data reported to and distributed by the European environmental agency of
 the [European Air Quality Standards](https://ec.europa.eu/environment/air/quality/standards.htm).
